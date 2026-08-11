@@ -3,8 +3,8 @@
 CloudDock 浏览器扩展隐私权政策网站，基于 Next.js 构建，可部署到 Vercel。
 
 ## 路由
-- `/cloud-dock/privacy-policy` - CloudDock Privacy Policy
-- `/` - 自动重定向到 `/cloud-dock/privacy-policy`
+- `/cloud-dock` - CloudDock Privacy Policy
+- `/` - 自动重定向到 `/cloud-dock`
 
 ## 技术栈
 
