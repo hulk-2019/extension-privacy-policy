@@ -59,15 +59,7 @@ resources:
               - PATCH
               - OPTIONS
       customDomain:
-        domainName: auto
+        domainName: nano-banana.ai520.wiki
         protocol: HTTP
         route:
           path: /*
-          methods:
-            - GET
-            - POST
-            - PUT
-            - DELETE
-            - HEAD
-            - PATCH
-            - OPTIONS

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import styles from "./music.module.css";
 
 const STREAM_URL = "/api/stream";
@@ -166,6 +166,7 @@ export default function MusicPlayer() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lyricsRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const volumeInputRef = useRef<HTMLInputElement | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -179,6 +180,76 @@ export default function MusicPlayer() {
   const [album, setAlbum] = useState("");
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
+  const [verticalVolume, setVerticalVolume] = useState(false);
+  const [volumeOpen, setVolumeOpen] = useState(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
+  const graphReadyRef = useRef(false);
+  const volumeHideTimerRef = useRef(0);
+  const volumeRef = useRef(volume);
+  const mutedRef = useRef(isMuted);
+  volumeRef.current = volume;
+  mutedRef.current = isMuted;
+
+  const clearVolumeHideTimer = useCallback(() => {
+    window.clearTimeout(volumeHideTimerRef.current);
+  }, []);
+
+  const scheduleVolumeHide = useCallback(() => {
+    window.clearTimeout(volumeHideTimerRef.current);
+    volumeHideTimerRef.current = window.setTimeout(() => {
+      setVolumeOpen(false);
+    }, 1200);
+  }, []);
+
+  const outputLevel = useCallback(() => {
+    return mutedRef.current ? 0 : volumeRef.current;
+  }, []);
+
+  const applyOutputGain = useCallback((level: number) => {
+    const safe = Math.min(1, Math.max(0, level));
+    if (gainRef.current) {
+      gainRef.current.gain.value = safe;
+      if (audioRef.current) audioRef.current.volume = 1;
+      return;
+    }
+    if (audioRef.current) {
+      audioRef.current.volume = safe;
+    }
+  }, []);
+
+  const ensureAudioGraph = useCallback(() => {
+    const audio = audioRef.current;
+    if (audioCtxRef.current?.state === "suspended") {
+      void audioCtxRef.current.resume();
+    }
+    if (!audio || graphReadyRef.current) return;
+
+    const AudioContextCtor =
+      window.AudioContext ||
+      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) {
+      graphReadyRef.current = true;
+      return;
+    }
+
+    try {
+      const ctx = new AudioContextCtor();
+      const source = ctx.createMediaElementSource(audio);
+      const gain = ctx.createGain();
+      gain.gain.value = outputLevel();
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      audio.volume = 1;
+      audioCtxRef.current = ctx;
+      gainRef.current = gain;
+      void ctx.resume();
+    } catch {
+      // 元素已被接入音频图，或当前环境不支持 Web Audio。
+    } finally {
+      graphReadyRef.current = true;
+    }
+  }, [outputLevel]);
 
   const syncDuration = useCallback((audio: HTMLAudioElement) => {
     const next = audio.duration;
@@ -191,11 +262,13 @@ export default function MusicPlayer() {
     const audio = audioRef.current;
     if (!audio) return;
     if (audio.paused) {
+      ensureAudioGraph();
+      applyOutputGain(outputLevel());
       audio.play().catch(() => setIsPlaying(false));
     } else {
       audio.pause();
     }
-  }, []);
+  }, [applyOutputGain, ensureAudioGraph, outputLevel]);
 
   const handleSeek = useCallback((value: number) => {
     const audio = audioRef.current;
@@ -210,32 +283,103 @@ export default function MusicPlayer() {
     audio.currentTime = 0;
     setCurrentTime(0);
     if (audio.paused) {
+      ensureAudioGraph();
+      applyOutputGain(outputLevel());
       audio.play().catch(() => setIsPlaying(false));
     }
-  }, []);
+  }, [applyOutputGain, ensureAudioGraph, outputLevel]);
 
   const handleVolume = useCallback((value: number) => {
     const next = Math.min(1, Math.max(0, value));
     setVolume(next);
     setIsMuted(next === 0);
+    volumeRef.current = next;
+    mutedRef.current = next === 0;
+    ensureAudioGraph();
+    applyOutputGain(next);
     const audio = audioRef.current;
     if (audio) {
-      audio.volume = next;
-      audio.muted = next === 0;
+      audio.muted = false;
     }
-  }, []);
+  }, [applyOutputGain, ensureAudioGraph]);
+
+  const applyVerticalVolume = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const rail = event.currentTarget.getBoundingClientRect();
+      if (rail.height <= 0) return;
+      handleVolume((rail.bottom - event.clientY) / rail.height);
+    },
+    [handleVolume],
+  );
+
+  const handleVerticalVolumePointerDown = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!verticalVolume) return;
+      event.preventDefault();
+      event.stopPropagation();
+      clearVolumeHideTimer();
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // 非可信指针事件（自动化测试）可能无法捕获，不影响音量计算。
+      }
+      applyVerticalVolume(event);
+    },
+    [applyVerticalVolume, clearVolumeHideTimer, verticalVolume],
+  );
+
+  const handleVerticalVolumePointerMove = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!verticalVolume || !event.currentTarget.hasPointerCapture(event.pointerId)) {
+        return;
+      }
+      applyVerticalVolume(event);
+    },
+    [applyVerticalVolume, verticalVolume],
+  );
+
+  const handleVerticalVolumePointerUp = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!verticalVolume) return;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      scheduleVolumeHide();
+    },
+    [scheduleVolumeHide, verticalVolume],
+  );
 
   const toggleMute = useCallback(() => {
     const nextMuted = !isMuted;
-    setIsMuted(nextMuted);
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.muted = nextMuted;
+    let nextVolume = volume;
     if (!nextMuted && volume === 0) {
-      setVolume(0.6);
-      audio.volume = 0.6;
+      nextVolume = 0.6;
+      setVolume(nextVolume);
     }
-  }, [isMuted, volume]);
+    setIsMuted(nextMuted);
+    volumeRef.current = nextVolume;
+    mutedRef.current = nextMuted;
+    ensureAudioGraph();
+    applyOutputGain(nextMuted ? 0 : nextVolume);
+    const audio = audioRef.current;
+    if (audio) {
+      audio.muted = nextMuted;
+    }
+  }, [applyOutputGain, ensureAudioGraph, isMuted, volume]);
+
+  const handleVolumeIconClick = useCallback(() => {
+    if (!verticalVolume) {
+      toggleMute();
+      return;
+    }
+    if (!volumeOpen) {
+      setVolumeOpen(true);
+      scheduleVolumeHide();
+      return;
+    }
+    toggleMute();
+    scheduleVolumeHide();
+  }, [scheduleVolumeHide, toggleMute, verticalVolume, volumeOpen]);
 
   const activeIndex = useMemo(() => {
     let low = 0;
@@ -332,6 +476,30 @@ export default function MusicPlayer() {
   }, [currentTime, isPlaying, lyrics]);
 
   useEffect(() => {
+    const media = window.matchMedia("(max-width: 640px)");
+    const sync = () => setVerticalVolume(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    if (!verticalVolume) {
+      setVolumeOpen(false);
+      clearVolumeHideTimer();
+    }
+  }, [clearVolumeHideTimer, verticalVolume]);
+
+  useEffect(() => () => clearVolumeHideTimer(), [clearVolumeHideTimer]);
+
+  useEffect(() => {
+    volumeInputRef.current?.setAttribute(
+      "orient",
+      verticalVolume ? "vertical" : "horizontal",
+    );
+  }, [verticalVolume]);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.code !== "Space") return;
       const tag = (event.target as HTMLElement | null)?.tagName;
@@ -401,44 +569,43 @@ export default function MusicPlayer() {
 
   return (
     <main className={styles.page} data-theme="dark" aria-label="音乐播放器">
-      <div
-        className={styles.stage}
-        onClick={togglePlay}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") togglePlay();
-        }}
-        role="presentation"
-      >
+      <div className={styles.stageWrap}>
         <div
-          className={`${styles.vinyl} ${isPlaying ? styles.spinning : ""}`}
-          aria-hidden="true"
-        />
+          className={styles.stage}
+          onClick={togglePlay}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") togglePlay();
+          }}
+          role="presentation"
+        >
+          <div
+            className={`${styles.vinyl} ${isPlaying ? styles.spinning : ""}`}
+            aria-hidden="true"
+          />
 
-        <div className={styles.lyrics} ref={lyricsRef}>
-          {lyricsError ? (
-            <p className={styles.lyricsError}>{lyricsError}</p>
-          ) : (
-            <div
-              ref={trackRef}
-              className={styles.lyricsTrack}
-            >
-              {lyrics.map((line, index) => (
-                <p
-                  key={`${line.time}-${index}`}
-                  className={`${styles.lyricLine} ${
-                    index === activeIndex ? styles.lyricActive : ""
-                  }`}
-                  aria-current={index === activeIndex ? "true" : undefined}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleSeek(line.time);
-                  }}
-                >
-                  {line.text || "♪"}
-                </p>
-              ))}
-            </div>
-          )}
+          <div className={styles.lyrics} ref={lyricsRef}>
+            {lyricsError ? (
+              <p className={styles.lyricsError}>{lyricsError}</p>
+            ) : (
+              <div ref={trackRef} className={styles.lyricsTrack}>
+                {lyrics.map((line, index) => (
+                  <p
+                    key={`${line.time}-${index}`}
+                    className={`${styles.lyricLine} ${
+                      index === activeIndex ? styles.lyricActive : ""
+                    }`}
+                    aria-current={index === activeIndex ? "true" : undefined}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleSeek(line.time);
+                    }}
+                  >
+                    {line.text || "♪"}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -471,22 +638,65 @@ export default function MusicPlayer() {
           <div className={styles.volumeGroup}>
             <button
               type="button"
-              className={styles.iconButton}
-              onClick={toggleMute}
-              aria-label={isMuted || volume === 0 ? "取消静音" : "静音"}
+              className={`${styles.iconButton} ${styles.muteButton}`}
+              onClick={handleVolumeIconClick}
+              aria-label={
+                verticalVolume && !volumeOpen
+                  ? "调节音量"
+                  : isMuted || volume === 0
+                    ? "取消静音"
+                    : "静音"
+              }
+              aria-expanded={verticalVolume ? volumeOpen : undefined}
             >
               <VolumeIcon muted={isMuted || volume === 0} />
             </button>
-            <input
-              type="range"
-              className={styles.volume}
-              min={0}
-              max={1}
-              step={0.01}
-              value={isMuted ? 0 : volume}
-              onChange={(event) => handleVolume(Number(event.target.value))}
-              aria-label="音量"
-            />
+            <div
+              className={`${styles.volumeRail} ${
+                volumeOpen ? styles.volumeRailOpen : ""
+              }`}
+              role={verticalVolume && volumeOpen ? "slider" : undefined}
+              aria-label={verticalVolume && volumeOpen ? "音量" : undefined}
+              aria-orientation={verticalVolume && volumeOpen ? "vertical" : undefined}
+              aria-valuemin={verticalVolume && volumeOpen ? 0 : undefined}
+              aria-valuemax={verticalVolume && volumeOpen ? 1 : undefined}
+              aria-valuenow={
+                verticalVolume && volumeOpen ? (isMuted ? 0 : volume) : undefined
+              }
+              tabIndex={verticalVolume && volumeOpen ? 0 : undefined}
+              onPointerDown={handleVerticalVolumePointerDown}
+              onPointerMove={handleVerticalVolumePointerMove}
+              onPointerUp={handleVerticalVolumePointerUp}
+              onPointerCancel={handleVerticalVolumePointerUp}
+              onKeyDown={
+                verticalVolume
+                  ? (event) => {
+                      if (event.key === "ArrowUp" || event.key === "ArrowRight") {
+                        event.preventDefault();
+                        handleVolume((isMuted ? 0 : volume) + 0.05);
+                      } else if (event.key === "ArrowDown" || event.key === "ArrowLeft") {
+                        event.preventDefault();
+                        handleVolume((isMuted ? 0 : volume) - 0.05);
+                      }
+                    }
+                  : undefined
+              }
+            >
+              <input
+                ref={volumeInputRef}
+                type="range"
+                className={styles.volume}
+                min={0}
+                max={1}
+                step={0.01}
+                value={isMuted ? 0 : volume}
+                onChange={(event) => handleVolume(Number(event.target.value))}
+                aria-label="音量"
+                aria-orientation={verticalVolume ? "vertical" : "horizontal"}
+                aria-hidden={verticalVolume}
+                tabIndex={verticalVolume ? -1 : 0}
+              />
+            </div>
           </div>
         </div>
 

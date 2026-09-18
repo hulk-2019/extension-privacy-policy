@@ -3,10 +3,18 @@ import { NextRequest } from "next/server";
 // 使用 Node.js 运行时，以便把上游 OSS 的响应体作为流式 Web ReadableStream 转发给客户端。
 export const runtime = "nodejs";
 
-// 默认的 OSS 音频地址（例如 https://bucket.oss-cn-hangzhou.aliyuncs.com/path/music.mp3）
-const DEFAULT_AUDIO_URL =
-  process.env.AUDIO_OSS_URL?.trim() ||
+const FALLBACK_AUDIO_URL =
   "https://sd-static-web.oss-cn-hangzhou.aliyuncs.com/%E8%BF%99%E6%89%87%E7%AA%97/%E8%BF%99%E6%89%87%E7%AA%97.mp3";
+
+function configuredAudioUrl(): string {
+  const fromEnv = process.env.AUDIO_OSS_URL?.trim() ?? "";
+  if (!fromEnv || /your-bucket|example\.com|path\/to\/music/i.test(fromEnv)) {
+    return FALLBACK_AUDIO_URL;
+  }
+  return fromEnv;
+}
+
+const DEFAULT_AUDIO_URL = configuredAudioUrl();
 
 // 允许通过 /api/stream?url=... 动态指定音频源的主机白名单（逗号分隔，小写比较）。
 // 留空则禁用 ?url= 方式（推荐），仅使用 DEFAULT_AUDIO_URL，避免服务被当作开放代理（SSRF）。
@@ -74,7 +82,10 @@ export async function GET(request: NextRequest) {
   const range = request.headers.get("range");
 
   const upstream = await fetchUpstream(audioUrl, {
-    headers: range ? { Range: range } : undefined,
+    headers: {
+      ...(range ? { Range: range } : {}),
+      "User-Agent": "CloudDock-MusicPlayer/1.0",
+    },
     redirect: "follow",
   });
 
@@ -117,7 +128,10 @@ export async function HEAD(request: NextRequest) {
     return new Response(null, { status: 404 });
   }
 
-  const upstream = await fetchUpstream(audioUrl, { method: "HEAD" });
+  const upstream = await fetchUpstream(audioUrl, {
+    method: "HEAD",
+    headers: { "User-Agent": "CloudDock-MusicPlayer/1.0" },
+  });
   if (!upstream) {
     return new Response(null, { status: 502 });
   }

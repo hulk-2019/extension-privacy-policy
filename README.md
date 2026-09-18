@@ -6,7 +6,7 @@ CloudDock 浏览器扩展隐私权政策网站，基于 Next.js 构建，可部�
 - `/cloud-dock` - CloudDock Privacy Policy
 - `/music` - 流式音乐播放器（Web / 移动端自适应）
 - `/api/stream` - 服务端音频流推送代理（支持 HTTP Range 拖动进度）
-- `/` - 自动重定向到 `/cloud-dock`
+- `/` - 自动重定向到 `/music`
 
 ## 流式音乐播放器
 
@@ -78,9 +78,32 @@ npm install
 npm run deploy:fc
 ```
 
-会先 `next build`，把静态资源拷进 `.next/standalone`，再上传为 Web 函数。部署成功后会给出 HTTP 触发器地址，以及一个 `*.devsapp.net` 测试域名（仅供联调，不适合生产）。
+会先 `next build`，把静态资源拷进 `.next/standalone`，再上传为 Web 函数。部署成功后会给出 HTTP 触发器地址，形如：
 
-生产环境请在函数计算控制台为该函数绑定已备案的自定义域名。
+```text
+https://cloud-dock-web-xxxxxxxx.cn-hangzhou.fcapp.run
+```
+
+可直接访问 `/cloud-dock`、`/music`。根路径 `/` 会直接渲染隐私政策，不再做 302 跳转（FC 默认域名禁止外跳）。
+
+注意：
+
+- `*.fcapp.run` 未备案，浏览器会把页面当成附件下载，看起来像“打不开”。这是函数计算的限制，不是站点挂了。
+- `*.devsapp.net` 测试域名已经失效，打开是 Serverless Devs 社区说明页，不会进你的函数。
+- 要在浏览器里正常打开，需要绑定已备案自定义域名。当前配置为 `nano-banana.ai520.wiki`。
+
+### 4. 绑定自定义域名
+
+1. 在域名解析里添加 CNAME（主机记录 `nano-banana`，记录值见下）。
+2. 公网 CNAME 格式：`<阿里云主账号ID>.cn-hangzhou.fc.aliyuncs.com`  
+   账号 ID 可在函数计算控制台「添加自定义域名」页看到；本项目上次部署自动域名里的账号 ID 为 `1755883887221979`，即：
+
+   ```text
+   nano-banana.ai520.wiki  CNAME  1755883887221979.cn-hangzhou.fc.aliyuncs.com
+   ```
+
+3. 解析生效后再执行 `npm run deploy:fc`。未解析成功时，FC 会报 `DomainNameNotResolved`。
+4. 访问：`http://nano-banana.ai520.wiki`、`/cloud-dock`、`/music`。HTTPS 可在控制台上传证书后把 `s.yaml` 的 `protocol` 改成 `HTTP,HTTPS`。
 
 ### 控制台手动上传（可选）
 
