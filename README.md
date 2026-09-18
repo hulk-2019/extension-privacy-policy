@@ -4,7 +4,8 @@ CloudDock 浏览器扩展隐私权政策网站，基于 Next.js 构建，可部�
 
 ## 路由
 - `/cloud-dock` - CloudDock Privacy Policy
-- `/music` - 流式音乐播放器（Web / 移动端自适应）
+- `/music` - 流式音乐播放器（经 `/api/stream` 代理）
+- `/play` - 同款播放器，`<audio>` 直连音频 URL（可用 `?url=` 指定）
 - `/api/stream` - 服务端音频流推送代理（支持 HTTP Range 拖动进度）
 - `/` - 自动重定向到 `/music`
 

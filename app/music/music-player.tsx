@@ -7,6 +7,10 @@ const STREAM_URL = "/api/stream";
 const LYRICS_URL = "/api/lyrics";
 const DEFAULT_TITLE = "这扇窗";
 
+type MusicPlayerProps = {
+  audioSrc?: string;
+};
+
 function formatTime(value: number): string {
   if (!Number.isFinite(value) || value <= 0) {
     return "0:00";
@@ -43,7 +47,7 @@ function computeLyricOffset(
 
   const first = children[0];
   if (index < 0) {
-    return container.clientHeight * 0.72 - first.offsetTop - first.clientHeight;
+    return container.clientHeight / 2 - first.offsetTop - first.clientHeight / 2;
   }
 
   const current = children[index];
@@ -162,14 +166,14 @@ function VolumeIcon({ muted }: { muted: boolean }) {
   );
 }
 
-export default function MusicPlayer() {
+export default function MusicPlayer({ audioSrc = STREAM_URL }: MusicPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lyricsRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const volumeInputRef = useRef<HTMLInputElement | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -186,6 +190,8 @@ export default function MusicPlayer() {
   const gainRef = useRef<GainNode | null>(null);
   const graphReadyRef = useRef(false);
   const volumeHideTimerRef = useRef(0);
+  const autoplayTriedRef = useRef(false);
+  const userPausedRef = useRef(false);
   const volumeRef = useRef(volume);
   const mutedRef = useRef(isMuted);
   volumeRef.current = volume;
@@ -218,12 +224,11 @@ export default function MusicPlayer() {
     }
   }, []);
 
-  const ensureAudioGraph = useCallback(() => {
-    const audio = audioRef.current;
+  const ensureAudioContext = useCallback(() => {
     if (audioCtxRef.current?.state === "suspended") {
       void audioCtxRef.current.resume();
     }
-    if (!audio || graphReadyRef.current) return;
+    if (audioCtxRef.current || graphReadyRef.current) return;
 
     const AudioContextCtor =
       window.AudioContext ||
@@ -235,21 +240,89 @@ export default function MusicPlayer() {
 
     try {
       const ctx = new AudioContextCtor();
+      audioCtxRef.current = ctx;
+      void ctx.resume();
+    } catch {
+      graphReadyRef.current = true;
+    }
+  }, []);
+
+  const connectAudioGraph = useCallback(() => {
+    const audio = audioRef.current;
+    const ctx = audioCtxRef.current;
+    if (!audio || !ctx || graphReadyRef.current) {
+      applyOutputGain(outputLevel());
+      return;
+    }
+
+    try {
       const source = ctx.createMediaElementSource(audio);
       const gain = ctx.createGain();
       gain.gain.value = outputLevel();
       source.connect(gain);
       gain.connect(ctx.destination);
       audio.volume = 1;
-      audioCtxRef.current = ctx;
       gainRef.current = gain;
-      void ctx.resume();
     } catch {
       // 元素已被接入音频图，或当前环境不支持 Web Audio。
     } finally {
       graphReadyRef.current = true;
     }
-  }, [outputLevel]);
+    applyOutputGain(outputLevel());
+  }, [applyOutputGain, outputLevel]);
+
+  const ensureAudioGraph = useCallback(() => {
+    ensureAudioContext();
+    const audio = audioRef.current;
+    if (audio && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      connectAudioGraph();
+    }
+  }, [connectAudioGraph, ensureAudioContext]);
+
+  const startPlayback = useCallback((fromUserGesture = false) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    userPausedRef.current = false;
+    setError(null);
+    setIsLoading(true);
+
+    if (fromUserGesture) {
+      ensureAudioContext();
+    }
+
+    const afterPlay = () => {
+      if (fromUserGesture || audioCtxRef.current?.state === "running") {
+        connectAudioGraph();
+        return;
+      }
+      applyOutputGain(outputLevel());
+    };
+
+    const playNow = () => audio.play().then(afterPlay);
+
+    playNow()
+      .catch((error: unknown) => {
+        const name = error instanceof Error ? error.name : "";
+        if (name === "NotAllowedError") {
+          audio.muted = true;
+          return audio.play().then(() => {
+            audio.muted = isMuted;
+            afterPlay();
+          });
+        }
+        try {
+          audio.currentTime = 0;
+        } catch {
+          audio.load();
+        }
+        return playNow();
+      })
+      .catch(() => {
+        setIsPlaying(false);
+        setIsLoading(false);
+      });
+  }, [applyOutputGain, connectAudioGraph, ensureAudioContext, isMuted, outputLevel]);
 
   const syncDuration = useCallback((audio: HTMLAudioElement) => {
     const next = audio.duration;
@@ -262,13 +335,13 @@ export default function MusicPlayer() {
     const audio = audioRef.current;
     if (!audio) return;
     if (audio.paused) {
-      ensureAudioGraph();
-      applyOutputGain(outputLevel());
-      audio.play().catch(() => setIsPlaying(false));
+      startPlayback(true);
     } else {
+      userPausedRef.current = true;
       audio.pause();
+      setIsLoading(false);
     }
-  }, [applyOutputGain, ensureAudioGraph, outputLevel]);
+  }, [startPlayback]);
 
   const handleSeek = useCallback((value: number) => {
     const audio = audioRef.current;
@@ -283,11 +356,9 @@ export default function MusicPlayer() {
     audio.currentTime = 0;
     setCurrentTime(0);
     if (audio.paused) {
-      ensureAudioGraph();
-      applyOutputGain(outputLevel());
-      audio.play().catch(() => setIsPlaying(false));
+      startPlayback(true);
     }
-  }, [applyOutputGain, ensureAudioGraph, outputLevel]);
+  }, [startPlayback]);
 
   const handleVolume = useCallback((value: number) => {
     const next = Math.min(1, Math.max(0, value));
@@ -402,6 +473,16 @@ export default function MusicPlayer() {
     if (!audio) return;
     syncDuration(audio);
   }, [isLoading, isPlaying, syncDuration]);
+
+  useEffect(() => {
+    if (autoplayTriedRef.current) return;
+    autoplayTriedRef.current = true;
+    startPlayback();
+  }, [startPlayback]);
+
+  useEffect(() => {
+    document.title = title || DEFAULT_TITLE;
+  }, [title]);
 
   useEffect(() => {
     let cancelled = false;
@@ -723,30 +804,48 @@ export default function MusicPlayer() {
 
       <audio
         ref={audioRef}
-        src={STREAM_URL}
-        preload="metadata"
+        src={audioSrc}
+        autoPlay
+        playsInline
+        preload="auto"
         onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
+        onPause={() => {
+          setIsPlaying(false);
+          setIsLoading(false);
+        }}
         onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
         onLoadedMetadata={(event) => {
           syncDuration(event.currentTarget);
-          setIsLoading(false);
         }}
         onDurationChange={(event) => {
           syncDuration(event.currentTarget);
         }}
-        onWaiting={() => setIsLoading(true)}
+        onWaiting={(event) => {
+          if (!event.currentTarget.paused) setIsLoading(true);
+        }}
         onPlaying={(event) => {
           syncDuration(event.currentTarget);
           setIsLoading(false);
         }}
         onCanPlay={(event) => {
           syncDuration(event.currentTarget);
+          if (!event.currentTarget.paused) {
+            setIsLoading(false);
+            return;
+          }
+          if (!userPausedRef.current) {
+            event.currentTarget.play().catch(() => {
+              setIsLoading(false);
+            });
+          }
+        }}
+        onEnded={() => {
+          setIsPlaying(false);
           setIsLoading(false);
         }}
-        onEnded={() => setIsPlaying(false)}
         onError={() => {
           setError("音频加载失败");
+          setIsPlaying(false);
           setIsLoading(false);
         }}
       />

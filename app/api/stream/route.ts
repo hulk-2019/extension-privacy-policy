@@ -1,18 +1,8 @@
 import { NextRequest } from "next/server";
+import { configuredAudioUrl } from "../../../lib/audio-source";
 
 // 使用 Node.js 运行时，以便把上游 OSS 的响应体作为流式 Web ReadableStream 转发给客户端。
 export const runtime = "nodejs";
-
-const FALLBACK_AUDIO_URL =
-  "https://sd-static-web.oss-cn-hangzhou.aliyuncs.com/%E8%BF%99%E6%89%87%E7%AA%97/%E8%BF%99%E6%89%87%E7%AA%97.mp3";
-
-function configuredAudioUrl(): string {
-  const fromEnv = process.env.AUDIO_OSS_URL?.trim() ?? "";
-  if (!fromEnv || /your-bucket|example\.com|path\/to\/music/i.test(fromEnv)) {
-    return FALLBACK_AUDIO_URL;
-  }
-  return fromEnv;
-}
 
 const DEFAULT_AUDIO_URL = configuredAudioUrl();
 
