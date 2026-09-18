@@ -6,7 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "prepare:fc": "node scripts/prepare-fc.mjs",
+    "deploy:fc": "s deploy -y"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "next": "16.3.0",
